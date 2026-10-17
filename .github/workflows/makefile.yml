@@ -1,0 +1,152 @@
+name: Build Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: 'defconfig 文件名'
+        required: true
+        default: 'vendor/holi-qgki_defconfig'
+      extra_kcflags:
+        description: '额外的 KCFLAGS（留空则默认 -Wno-error）'
+        required: false
+        default: '-Wno-error'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 环境信息
+        run: |
+          lsb_release -a
+          echo "---"
+          nproc
+          free -g
+          df -h /
+
+      - name: 列出可用 defconfig
+        run: |
+          echo "=== arch/arm64/configs 全部 ==="
+          ls arch/arm64/configs/ || echo "目录不存在"
+          echo ""
+          echo "=== 候选（holi/fp4/vendor/qgki） ==="
+          ls arch/arm64/configs/ 2>/dev/null | grep -iE "holi|fp4|vendor|qgki" || echo "无匹配"
+
+      - name: 检查设备树
+        run: |
+          echo "=== dts/vendor 文件数 ==="
+          find arch/arm64/boot/dts/vendor -name "*.dts*" 2>/dev/null | wc -l
+          echo "=== techpack 文件数 ==="
+          find techpack -type f \( -name "*.c" -o -name "*.h" \) 2>/dev/null | wc -l
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache cpio flex git gnupg gperf \
+            imagemagick libelf-dev libssl-dev libxml2-utils \
+            lz4 lzop rsync schedtool xsltproc zip zlib1g-dev \
+            kmod python3 python-is-python3 libncurses-dev \
+            clang-14 lld-14 llvm-14
+          echo "---"
+          clang-14 --version
+          ld.lld-14 --version || true
+
+      - name: ccache 配置
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=5G" >> $GITHUB_ENV
+          ccache -M 5G
+          ccache -z
+
+      - name: 恢复 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.event.inputs.defconfig }}-${{ github.run_number }}
+          restore-keys: |
+            ccache-${{ github.event.inputs.defconfig }}-
+            ccache-
+
+      - name: 生成 .config
+        run: |
+          set -e
+          DEFCONFIG="${{ github.event.inputs.defconfig }}"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          echo ">>> defconfig: $DEFCONFIG"
+          make O=out ARCH=arm64 "$DEFCONFIG"
+          echo "--- .config 头部 ---"
+          head -5 out/.config
+          echo "--- 关键项检查 ---"
+          grep -E "CONFIG_ARM64=|CONFIG_LOCALVERSION=" out/.config || true
+
+      - name: 编译内核
+        run: |
+          set -e
+          DEFCONFIG="${{ github.event.inputs.defconfig }}"
+          KCFLAGS_IN="${{ github.event.inputs.extra_kcflags }}"
+          LLVM=/usr/lib/llvm-14
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC="$LLVM/bin/clang"
+          export LD="$LLVM/bin/ld.lld"
+          export AR="$LLVM/bin/llvm-ar"
+          export NM="$LLVM/bin/llvm-nm"
+          export OBJCOPY="$LLVM/bin/llvm-objcopy"
+          export OBJDUMP="$LLVM/bin/llvm-objdump"
+          export STRIP="$LLVM/bin/llvm-strip"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export PATH="$LLVM/bin:$PATH"
+          export USE_CCACHE=1
+
+          echo ">>> clang: $($CC --version | head -1)"
+          echo ">>> defconfig: $DEFCONFIG"
+          echo ">>> KCFLAGS: $KCFLAGS_IN"
+
+          if [ -n "$KCFLAGS_IN" ]; then
+            make O=out ARCH=arm64 -j$(nproc) CC="$CC" KCFLAGS="$KCFLAGS_IN"
+          else
+            make O=out ARCH=arm64 -j$(nproc) CC="$CC"
+          fi
+
+          echo ">>> ccache 统计"
+          ccache -s
+
+      - name: 收集产物
+        if: always()
+        run: |
+          mkdir -p artifact
+          find out/arch/arm64/boot -maxdepth 1 -type f \
+            \( -name "Image*" -o -name "*.dtb" -o -name "*.dtbo" \) \
+            -exec cp {} artifact/ \; 2>/dev/null || true
+          echo "--- artifact ---"
+          ls -lh artifact/ 2>/dev/null || echo "无产物"
+
+      - name: 上传产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ github.run_number }}
+          path: artifact/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: 保存完整日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ github.run_number }}
+          path: |
+            out/.config
+          retention-days: 14
+          if-no-files-found: ignore
