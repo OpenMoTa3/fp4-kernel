@@ -1,0 +1,95 @@
+name: Build Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: 'defconfig 文件名（如 vendor/holi-qgki_defconfig）'
+        required: true
+        default: 'vendor/holi-qgki_defconfig'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 列出可用 defconfig（首次跑用来看名字）
+        run: |
+          echo "=== arch/arm64/configs ==="
+          ls arch/arm64/configs/
+          echo "=== 过滤候选 ==="
+          ls arch/arm64/configs/ | grep -iE "holi|fp4|vendor|qgki" || true
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache \
+            flex g++-multilib gcc-multilib git gnupg gperf \
+            imagemagick lib32ncurses5-dev lib32readline-dev \
+            lib32z1-dev libelf-dev liblz4-tool libncurses5 \
+            libncurses5-dev libsdl1.2-dev libssl-dev libxml2 \
+            libxml2-utils lzop pngcrush rsync schedtool \
+            squashfs-tools xsltproc zip zlib1g-dev cpio kmod
+
+      - name: 安装 clang-12
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-12 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm12.list
+          sudo apt-get update
+          sudo apt-get install -y clang-12 lld-12 llvm-12
+          clang-12 --version
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ github.sha }}
+          restore-keys: ccache-
+
+      - name: 编译
+        run: |
+          set -e
+          DEFCONFIG="${{ github.event.inputs.defconfig }}"
+          LLVM=/usr/lib/llvm-12
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC="$LLVM/bin/clang"
+          export LD="$LLVM/bin/ld.lld"
+          export AR="$LLVM/bin/llvm-ar"
+          export NM="$LLVM/bin/llvm-nm"
+          export OBJCOPY="$LLVM/bin/llvm-objcopy"
+          export OBJDUMP="$LLVM/bin/llvm-objdump"
+          export STRIP="$LLVM/bin/llvm-strip"
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export PATH="$LLVM/bin:$PATH"
+
+          echo ">>> clang: $($CC --version | head -1)"
+          echo ">>> defconfig: $DEFCONFIG"
+
+          make O=out ARCH=arm64 "$DEFCONFIG"
+          make O=out ARCH=arm64 -j$(nproc) CC="$CC"
+
+      - name: 收集产物
+        if: always()
+        run: |
+          mkdir -p artifact
+          find out/arch/arm64/boot -maxdepth 1 -type f \
+            \( -name "Image*" -o -name "*.dtb" -o -name "*.dtbo" \) \
+            -exec cp {} artifact/ \; 2>/dev/null || true
+          ls -lh artifact/ || echo "无产物"
+
+      - name: 上传产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ github.run_number }}
+          path: artifact/
+          retention-days: 14
