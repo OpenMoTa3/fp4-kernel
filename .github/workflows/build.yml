@@ -2,7 +2,7 @@ name: Build FP4 Kernel with Clang 10
 
 on:
   push:
-    branches: [ droidian ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
