@@ -1,4 +1,4 @@
-name: Build Droidian Kernel (.deb)
+name: Build FP4 Kernel with Clang 10
 
 on:
   push:
@@ -12,21 +12,32 @@ jobs:
       - name: Checkout kernel source
         uses: actions/checkout@v4
 
-      - name: Build & Package inside Droidian Docker
+      - name: Install Clang 10 and build dependencies
         run: |
-          docker run --rm \
-            -v ${{ github.workspace }}:/buildd/sources \
-            -v ${{ github.workspace }}/packages:/buildd \
-            -w /buildd/sources \
-            quay.io/droidian/build-essential:trixie-amd64 \
-            bash -c "
-              apt-get update && apt-get install -y linux-packaging-snippets &&
-              dpkg-buildpackage -b -uc -us
-            "
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-10 lld-10 llvm-10 \
+            bc bison build-essential ccache flex \
+            libelf-dev libssl-dev \
+            python3 unzip wget xz-utils
 
-      - name: Upload .deb packages
+      - name: Verify Clang 10
+        run: clang-10 --version
+
+      - name: Build kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export KBUILD_OUTPUT=build
+
+          # 使用 FP4 的 defconfig（根据实际文件名调整）
+          make CC=clang-10 LLVM=1 vendor/fp4-perf_defconfig
+          make CC=clang-10 LLVM=1 -j$(nproc)
+
+      - name: Upload kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: droidian-kernel-debs
-          path: packages/*.deb
+          name: fp4-kernel-image
+          path: build/arch/arm64/boot/Image
           if-no-files-found: error
