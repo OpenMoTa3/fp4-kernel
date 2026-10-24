@@ -25,7 +25,7 @@ jobs:
             bash -c '
               set -e
 
-              # 0. 按你的要求，先取消 APT 签名验证
+              # 0. 取消 APT 签名验证
               echo "APT::Get::AllowUnauthenticated \"true\";" > /etc/apt/apt.conf.d/99no-check
               echo "Acquire::AllowInsecureRepositories \"true\";" >> /etc/apt/apt.conf.d/99no-check
 
@@ -33,45 +33,14 @@ jobs:
               apt-get update
               apt-get install -y linux-packaging-snippets
 
-              # 2. 官方步骤：生成 Debian 打包骨架
+              # 2. 官方步骤：生成 debian/control
               cd /buildd/sources
-              mkdir -p debian/source
-              if [ ! -f debian/kernel-info.mk ]; then
-                cp -v /usr/share/linux-packaging-snippets/kernel-info.mk.example debian/kernel-info.mk
-              fi
-              echo 13 > debian/compat
-              echo "3.0 (native)" > debian/source/format
-
-              # 3. 官方步骤：创建 debian/rules（必须，包含 kernel-snippet.mk）
-              cat > debian/rules <<EOF
-#!/usr/bin/make -f
-
-include /usr/share/linux-packaging-snippets/kernel-snippet.mk
-
-%:
-	dh \$@
-EOF
-              chmod +x debian/rules
-
-              # 4. 指定 Droidian 预编译的 Clang 10 工具链
-              #    对应 Android 11（FP4 的 Halium 基础）
-              if grep -q "^BUILD_CC" debian/kernel-info.mk; then
-                sed -i "s/^BUILD_CC.*/BUILD_CC = clang/" debian/kernel-info.mk
-              else
-                echo "BUILD_CC = clang" >> debian/kernel-info.mk
-              fi
-              grep -q "^DEB_TOOLCHAIN" debian/kernel-info.mk || \
-                echo "DEB_TOOLCHAIN = clang-android-10.0-r370808" >> debian/kernel-info.mk
-              grep -q "^BUILD_PATH" debian/kernel-info.mk || \
-                echo "BUILD_PATH = /usr/lib/llvm-android-10.0-r370808/bin" >> debian/kernel-info.mk
-
-              # 5. 官方步骤：生成 debian/control
               rm -f debian/control
               debian/rules debian/control
 
-              # 6. 官方步骤：构建（交叉编译必须指定 RELENG_HOST_ARCH）
+              # 3. 官方步骤：构建
               RELENG_HOST_ARCH="arm64" releng-build-package
-            ' 
+            '
 
       - name: Upload .deb packages
         uses: actions/upload-artifact@v4
