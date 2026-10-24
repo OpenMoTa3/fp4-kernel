@@ -1,0 +1,32 @@
+name: Build Droidian Kernel (.deb)
+
+on:
+  push:
+    branches: [ droidian ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+
+      - name: Build & Package inside Droidian Docker
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/buildd/sources \
+            -v ${{ github.workspace }}/packages:/buildd \
+            -w /buildd/sources \
+            quay.io/droidian/build-essential:trixie-amd64 \
+            bash -c "
+              apt-get update && apt-get install -y linux-packaging-snippets &&
+              dpkg-buildpackage -b -uc -us
+            "
+
+      - name: Upload .deb packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: droidian-kernel-debs
+          path: packages/*.deb
+          if-no-files-found: error
