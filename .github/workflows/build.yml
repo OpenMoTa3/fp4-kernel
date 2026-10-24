@@ -47,12 +47,12 @@ jobs:
           # 1. 手动安装指定版本的 linux-packaging-snippets
           SNIPPETS_URL="http://production.repo.droidian.org/pool/main/l/linux-packaging-snippets/linux-packaging-snippets_49%2Bgit20260824222026.46633f1.next.production_all.deb"
           wget -O /tmp/linux-packaging-snippets.deb "$SNIPPETS_URL"
-          dpkg -i /tmp/linux-packaging-snippets.deb
+          dpkg -i /tmp/linux-packaging-snippets.deb || apt-get install -f -y --allow-downgrades
 
           # 2. 手动安装指定版本的 linux-initramfs-halium-generic (arm64)
           INITRAMFS_URL="http://production.repo.droidian.org/pool/main/i/initramfs-tools-halium/linux-initramfs-halium-generic_2025.04.11.0%2Bgit20250411210410.e515727.next.production_arm64.deb"
           wget -O /tmp/linux-initramfs-halium-generic.deb "$INITRAMFS_URL"
-          dpkg -i /tmp/linux-initramfs-halium-generic.deb
+          dpkg -i /tmp/linux-initramfs-halium-generic.deb || apt-get install -f -y --allow-downgrades
 
           # 3. 官方步骤：创建 Debian 打包骨架
           cd /buildd/sources
