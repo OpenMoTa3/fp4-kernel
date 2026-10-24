@@ -1,95 +1,59 @@
-name: Build Kernel
+name: Build FP4 Droidian Kernel (.deb)
 
 on:
+  push:
+    branches: [ droidian ]
   workflow_dispatch:
-    inputs:
-      defconfig:
-        description: 'defconfig 文件名（如 vendor/holi-qgki_defconfig）'
-        required: true
-        default: 'vendor/holi-qgki_defconfig'
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 180
-
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout kernel source
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: 列出可用 defconfig（首次跑用来看名字）
+      - name: Verify Git repository
         run: |
-          echo "=== arch/arm64/configs ==="
-          ls arch/arm64/configs/
-          echo "=== 过滤候选 ==="
-          ls arch/arm64/configs/ | grep -iE "holi|fp4|vendor|qgki" || true
+          git status
+          git log --oneline -3
 
-      - name: 安装依赖
+      - name: Build & Package inside Droidian Docker
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache \
-            flex g++-multilib gcc-multilib git gnupg gperf \
-            imagemagick lib32ncurses5-dev lib32readline-dev \
-            lib32z1-dev libelf-dev liblz4-tool libncurses5 \
-            libncurses5-dev libsdl1.2-dev libssl-dev libxml2 \
-            libxml2-utils lzop pngcrush rsync schedtool \
-            squashfs-tools xsltproc zip zlib1g-dev cpio kmod
+          docker run --rm \
+            -v ${{ github.workspace }}:/buildd/sources \
+            -v ${{ github.workspace }}/packages:/buildd \
+            -w /buildd/sources \
+            quay.io/droidian/build-essential:trixie-amd64 \
+            bash -c '
+              set -e
 
-      - name: 安装 clang-12
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
-          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-12 main" \
-            | sudo tee /etc/apt/sources.list.d/llvm12.list
-          sudo apt-get update
-          sudo apt-get install -y clang-12 lld-12 llvm-12
-          clang-12 --version
+              # 1. 安装 Clang 10 及打包工具
+              apt-get update
+              apt-get install -y --allow-unauthenticated clang-10 lld-10 llvm-10 linux-packaging-snippets
 
-      - name: 缓存 ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ github.sha }}
-          restore-keys: ccache-
+              # 2. 生成 Debian 打包骨架（严格按官方文档）
+              mkdir -p debian/source
+              cp -v /usr/share/linux-packaging-snippets/kernel-info.mk.example debian/kernel-info.mk
+              echo 13 > debian/compat
+              echo "3.0 (native)" > debian/source/format
 
-      - name: 编译
-        run: |
-          set -e
-          DEFCONFIG="${{ github.event.inputs.defconfig }}"
-          LLVM=/usr/lib/llvm-12
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export CC="$LLVM/bin/clang"
-          export LD="$LLVM/bin/ld.lld"
-          export AR="$LLVM/bin/llvm-ar"
-          export NM="$LLVM/bin/llvm-nm"
-          export OBJCOPY="$LLVM/bin/llvm-objcopy"
-          export OBJDUMP="$LLVM/bin/llvm-objdump"
-          export STRIP="$LLVM/bin/llvm-strip"
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export PATH="$LLVM/bin:$PATH"
+              # 3. 强制指定 Clang 10 编译器
+              if grep -q "^BUILD_CC" debian/kernel-info.mk; then
+                sed -i "s/^BUILD_CC.*/BUILD_CC := clang-10/" debian/kernel-info.mk
+              else
+                echo "BUILD_CC := clang-10" >> debian/kernel-info.mk
+              fi
 
-          echo ">>> clang: $($CC --version | head -1)"
-          echo ">>> defconfig: $DEFCONFIG"
+              # 4. 验证编译器
+              clang-10 --version
 
-          make O=out ARCH=arm64 "$DEFCONFIG"
-          make O=out ARCH=arm64 -j$(nproc) CC="$CC"
+              # 5. 执行打包构建
+              dpkg-buildpackage -b -uc -us
+            '
 
-      - name: 收集产物
-        if: always()
-        run: |
-          mkdir -p artifact
-          find out/arch/arm64/boot -maxdepth 1 -type f \
-            \( -name "Image*" -o -name "*.dtb" -o -name "*.dtbo" \) \
-            -exec cp {} artifact/ \; 2>/dev/null || true
-          ls -lh artifact/ || echo "无产物"
-
-      - name: 上传产物
-        if: always()
+      - name: Upload .deb packages
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-${{ github.run_number }}
-          path: artifact/
-          retention-days: 14
+          name: droidian-kernel-debs
+          path: packages/*.deb
+          if-no-files-found: error
