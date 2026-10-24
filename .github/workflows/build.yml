@@ -12,53 +12,95 @@ jobs:
       - name: Checkout kernel source
         uses: actions/checkout@v4
 
-      - name: Prepare packages directory
-        run: mkdir -p ${{ github.workspace }}/packages
-
-      - name: Build & Package inside Droidian Docker
+      # ============================================================
+      # 官方 Package bring-up：宿主机准备目录结构并放置源码
+      # (host)$ KERNEL_DIR="$HOME/droidian/kernel/vendor/device"
+      # (host)$ PACKAGES_DIR="$HOME/droidian/packages"
+      # (host)$ mkdir -p $PACKAGES_DIR
+      # (host)$ cd $KERNEL_DIR
+      # (host)$ git checkout -b droidian
+      # ============================================================
+      - name: Prepare official directory structure (host)
         run: |
+          set -e
+          export KERNEL_DIR="$HOME/droidian/kernel/vendor/device"
+          export PACKAGES_DIR="$HOME/droidian/packages"
+          mkdir -p "$KERNEL_DIR"
+          mkdir -p "$PACKAGES_DIR"
+          cp -a "${{ github.workspace }}/." "$KERNEL_DIR/"
+          cd "$KERNEL_DIR"
+          if [ "$(git branch --show-current)" != "droidian" ]; then
+            git checkout -b droidian || git checkout droidian
+          fi
+          git status
+          echo "KERNEL_DIR=$KERNEL_DIR"
+          echo "PACKAGES_DIR=$PACKAGES_DIR"
+
+      # ============================================================
+      # 官方 Docker 步骤
+      # (host)$ docker run --rm -v $PACKAGES_DIR:/buildd \
+      #         -v $KERNEL_DIR:/buildd/sources -it \
+      #         quay.io/droidian/build-essential:trixie-amd64 bash
+      # ============================================================
+      - name: Build & Package inside Droidian Docker (Official Flow)
+        run: |
+          set -e
+          export KERNEL_DIR="$HOME/droidian/kernel/vendor/device"
+          export PACKAGES_DIR="$HOME/droidian/packages"
           docker run --rm \
-            -v ${{ github.workspace }}/packages:/buildd \
-            -v ${{ github.workspace }}:/buildd/sources \
+            -v "$PACKAGES_DIR:/buildd" \
+            -v "$KERNEL_DIR:/buildd/sources" \
             -w /buildd/sources \
             quay.io/droidian/build-essential:trixie-amd64 \
             bash -c '
-              set -e
+          set -e
 
-              # ============================================================
-              # 0. 取消 APT 仓库签名验证
-              # ============================================================
-              echo "APT::Get::AllowUnauthenticated \"true\";" > /etc/apt/apt.conf.d/99no-check
-              echo "Acquire::AllowInsecureRepositories \"true\";" >> /etc/apt/apt.conf.d/99no-check
-              apt-get update
+          # 0. 取消 APT 仓库签名验证
+          echo "APT::Get::AllowUnauthenticated \"true\";" > /etc/apt/apt.conf.d/99no-check
+          echo "Acquire::AllowInsecureRepositories \"true\";" >> /etc/apt/apt.conf.d/99no-check
+          apt-get update
 
-              # ============================================================
-              # 1. 手动下载并安装指定版本的 linux-packaging-snippets
-              # ============================================================
-              SNIPPETS_URL="http://production.repo.droidian.org/pool/main/l/linux-packaging-snippets/linux-packaging-snippets_49%2Bgit20260824222026.46633f1.next.production_all.deb"
-              wget -O /tmp/linux-packaging-snippets.deb "$SNIPPETS_URL"
-              dpkg -i /tmp/linux-packaging-snippets.deb || apt-get install -f -y
-              dpkg -l | grep linux-packaging-snippets
+          # 1. 手动下载并安装指定版本的 linux-packaging-snippets
+          SNIPPETS_URL="http://production.repo.droidian.org/pool/main/l/linux-packaging-snippets/linux-packaging-snippets_49%2Bgit20260824222026.46633f1.next.production_all.deb"
+          wget -O /tmp/linux-packaging-snippets.deb "$SNIPPETS_URL"
+          dpkg -i /tmp/linux-packaging-snippets.deb || apt-get install -f -y
+          dpkg -l | grep linux-packaging-snippets
 
-              # ============================================================
-              # 2. 官方步骤：生成 debian/control
-              #    debian/rules、compat、source/format、kernel-info.mk
-              #    已在仓库中静态提交，此处不再动态生成
-              # ============================================================
-              cd /buildd/sources
-              rm -f debian/control
-              debian/rules debian/control
+          # 2. 官方步骤：创建 Debian 打包骨架
+          cd /buildd/sources
+          mkdir -p debian/source
 
-              # ============================================================
-              # 3. 官方步骤：构建内核并打包
-              #    交叉编译必须指定 RELENG_HOST_ARCH
-              # ============================================================
-              RELENG_HOST_ARCH="arm64" releng-build-package
+          if [ ! -f debian/kernel-info.mk ]; then
+            cp -v /usr/share/linux-packaging-snippets/kernel-info.mk.example debian/kernel-info.mk
+          fi
+
+          echo 13 > debian/compat
+          echo "3.0 (native)" > debian/source/format
+
+          if [ ! -f debian/rules ]; then
+            printf "#!/usr/bin/make -f\n\ninclude /usr/share/linux-packaging-snippets/kernel-snippet.mk\n\n%%:\n\tdh \$@\n" > debian/rules
+          fi
+          chmod +x debian/rules
+
+          # 3. 按模板变量设置 Clang 完整后缀版本号
+          #    FP4 的 Android 11 基础对应 clang-android-10.0-r370808
+          if grep -q "^CLANG_VERSION" debian/kernel-info.mk; then
+            sed -i "s/^CLANG_VERSION.*/CLANG_VERSION = 10.0-r370808/" debian/kernel-info.mk
+          else
+            echo "CLANG_VERSION = 10.0-r370808" >> debian/kernel-info.mk
+          fi
+
+          # 4. 官方步骤：生成 debian/control
+          rm -f debian/control
+          debian/rules debian/control
+
+          # 5. 官方步骤：构建内核并打包
+          RELENG_HOST_ARCH="arm64" releng-build-package
             '
 
       - name: Upload .deb packages
         uses: actions/upload-artifact@v4
         with:
           name: droidian-kernel-debs
-          path: packages/*.deb
+          path: /home/runner/droidian/packages/*.deb
           if-no-files-found: error
