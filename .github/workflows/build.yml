@@ -15,7 +15,7 @@ jobs:
       - name: Prepare packages directory
         run: mkdir -p ${{ github.workspace }}/packages
 
-      - name: Build & Package inside Droidian Docker (Official Flow)
+      - name: Build & Package inside Droidian Docker
         run: |
           docker run --rm \
             -v ${{ github.workspace }}/packages:/buildd \
@@ -25,20 +25,34 @@ jobs:
             bash -c '
               set -e
 
-              # 0. 取消 APT 签名验证
+              # ============================================================
+              # 0. 取消 APT 仓库签名验证
+              # ============================================================
               echo "APT::Get::AllowUnauthenticated \"true\";" > /etc/apt/apt.conf.d/99no-check
               echo "Acquire::AllowInsecureRepositories \"true\";" >> /etc/apt/apt.conf.d/99no-check
-
-              # 1. 官方步骤：安装 linux-packaging-snippets
               apt-get update
-              apt-get install -y linux-packaging-snippets
 
+              # ============================================================
+              # 1. 手动下载并安装指定版本的 linux-packaging-snippets
+              # ============================================================
+              SNIPPETS_URL="http://production.repo.droidian.org/pool/main/l/linux-packaging-snippets/linux-packaging-snippets_49%2Bgit20260824222026.46633f1.next.production_all.deb"
+              wget -O /tmp/linux-packaging-snippets.deb "$SNIPPETS_URL"
+              dpkg -i /tmp/linux-packaging-snippets.deb || apt-get install -f -y
+              dpkg -l | grep linux-packaging-snippets
+
+              # ============================================================
               # 2. 官方步骤：生成 debian/control
+              #    debian/rules、compat、source/format、kernel-info.mk
+              #    已在仓库中静态提交，此处不再动态生成
+              # ============================================================
               cd /buildd/sources
               rm -f debian/control
               debian/rules debian/control
 
-              # 3. 官方步骤：构建
+              # ============================================================
+              # 3. 官方步骤：构建内核并打包
+              #    交叉编译必须指定 RELENG_HOST_ARCH
+              # ============================================================
               RELENG_HOST_ARCH="arm64" releng-build-package
             '
 
